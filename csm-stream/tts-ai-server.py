@@ -1,3 +1,4 @@
+# works with tts-ai-client.py
 # converse with an llm via python script
 
 import os
@@ -457,7 +458,7 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8443,
+        port=8200,
         timeout_keep_alive=300,  # 5 minutes
         timeout_graceful_shutdown=60,  # 1 minute
     )

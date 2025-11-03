@@ -1,3 +1,4 @@
+# works with tts-client.py
 # orignal streaming file
 
 import os
@@ -482,7 +483,7 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=9999,
+        port=8100,
         timeout_keep_alive=300,
         timeout_graceful_shutdown=60,
     )

@@ -1,3 +1,4 @@
+# works with tts-selection-client.py
 # multiple voices, need to use config_selection.json
 
 import os
@@ -590,7 +591,7 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=1234,
+        port=8300,
         timeout_keep_alive=300,  # 5 minutes
         timeout_graceful_shutdown=60,  # 1 minute
     )

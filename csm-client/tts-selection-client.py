@@ -1,3 +1,6 @@
+# needs tts-selection-server.py running and also config_selection.json!
+# multi voice code based on ID's to use multiple voices at once
+
 import asyncio
 import websockets
 import json

@@ -1,5 +1,6 @@
 # needs tts-ai-server.py running!
 # orignally named llm.py
+# talk with ai via CLI
 
 import asyncio
 import websockets
