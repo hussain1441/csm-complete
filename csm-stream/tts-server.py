@@ -1,3 +1,5 @@
+# orignal streaming file
+
 import os
 
 os.environ.update(
@@ -152,9 +154,9 @@ def model_worker():
     warmup_texts = [
         "Hello, this is a warm-up sequence.",
         "The quick brown fox jumps over the lazy dog.",
-        "How much wood would a woodchuck chuck if a woodchuck could chuck wood?"
+        "How much wood would a woodchuck chuck if a woodchuck could chuck wood?",
     ]
-    
+
     for warmup_text in warmup_texts:
         try:
             for chunk in generator.generate_stream(
@@ -290,12 +292,12 @@ async def audio_generation(text: str, websocket: WebSocket):
                     # Collect and process audio chunks
                     else:
                         chunk_array = result.cpu().numpy().astype(np.float32)
-                        
+
                         # Apply gentle normalization
                         max_val = np.max(np.abs(chunk_array))
                         if max_val > 0:
                             chunk_array = chunk_array * (0.9 / max_val)
-                        
+
                         audio_chunks.append(chunk_array)
                         chunk_counter += 1
 
@@ -314,7 +316,9 @@ async def audio_generation(text: str, websocket: WebSocket):
                             audio_chunks = []
 
                 except queue.Empty:
-                    print(f"Timeout waiting for audio chunk {chunk_counter}", flush=True)
+                    print(
+                        f"Timeout waiting for audio chunk {chunk_counter}", flush=True
+                    )
                     break
 
             # Send any remaining audio chunks
@@ -351,47 +355,47 @@ async def audio_generation(text: str, websocket: WebSocket):
 
 def preprocess_text_for_tts(text):
     # Keep most punctuation for better speech rhythm
-    pattern = r'[\\\|\/\<\>\[\]\{\}\^\`\~]'
+    pattern = r"[\\\|\/\<\>\[\]\{\}\^\`\~]"
     cleaned_text = re.sub(pattern, "", text)
-    
+
     # Ensure proper spacing around punctuation
-    cleaned_text = re.sub(r'([.,!?;:])(\S)', r'\1 \2', cleaned_text)
-    cleaned_text = re.sub(r'(\S)([.,!?;:])', r'\1\2', cleaned_text)
-    
+    cleaned_text = re.sub(r"([.,!?;:])(\S)", r"\1 \2", cleaned_text)
+    cleaned_text = re.sub(r"(\S)([.,!?;:])", r"\1\2", cleaned_text)
+
     # Normalize spaces
-    cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
-    
+    cleaned_text = re.sub(r"\s+", " ", cleaned_text)
+
     return cleaned_text.strip()
 
 
 def split_text_into_meaningful_chunks(text, max_words=50):
-    sentences = re.split(r'(?<=[.!?])\s+', text)
+    sentences = re.split(r"(?<=[.!?])\s+", text)
     chunks = []
     current_chunk = []
     current_word_count = 0
-    
+
     for sentence in sentences:
         words = sentence.split()
         word_count = len(words)
-        
+
         if current_word_count + word_count > max_words and current_chunk:
             chunks.append(" ".join(current_chunk))
             current_chunk = []
             current_word_count = 0
-        
+
         current_chunk.append(sentence)
         current_word_count += word_count
-    
+
     if current_chunk:
         chunks.append(" ".join(current_chunk))
-    
+
     # If no natural breaks found, split by words
     if not chunks:
         words = text.split()
         for i in range(0, len(words), max_words):
-            chunk = " ".join(words[i:i + max_words])
+            chunk = " ".join(words[i : i + max_words])
             chunks.append(chunk)
-    
+
     return chunks
 
 

@@ -20,7 +20,7 @@ class SimpleTTSClient:
         self.keep_alive_interval = 5
         self.last_activity_time = 0
 
-    async def connect(self, uri="ws://hive.hussainkazarani.site/ws"):
+    async def connect(self, uri="ws://tts.hussainkazarani.site/ws"):
         """Connect to the server"""
         try:
             self.websocket = await websockets.connect(

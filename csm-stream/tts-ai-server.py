@@ -1,3 +1,5 @@
+# converse with an llm via python script
+
 import os
 
 os.environ.update(
@@ -459,4 +461,3 @@ if __name__ == "__main__":
         timeout_keep_alive=300,  # 5 minutes
         timeout_graceful_shutdown=60,  # 1 minute
     )
-

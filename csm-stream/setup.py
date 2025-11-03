@@ -203,7 +203,7 @@ def main():
 
     logger.info("Setup completed successfully!")
     logger.info("You can now start the ai voice call with:")
-    logger.info("   python tts-voice-call.py")
+    logger.info("   python tts-voice.py")
 
 
 if __name__ == "__main__":
