@@ -6,7 +6,7 @@ import 'package:flutter_sound/flutter_sound.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'data.dart';
 
-final url = "ws://hive.hussainkazarani.site/ws";
+final url = "ws://tts.hussainkazarani.site/ws";
 
 final channel = WebSocketChannel.connect(Uri.parse(url));
 final player = FlutterSoundPlayer();

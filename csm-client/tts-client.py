@@ -1,6 +1,5 @@
 # needs tts-server.py running!
 # orignally named new_chunks.py
-# streaming client via CLI to send text to server
 
 import asyncio
 import websockets

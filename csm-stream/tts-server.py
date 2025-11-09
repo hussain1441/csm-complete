@@ -73,7 +73,7 @@ async def startup_event():
     print(f"Model path: {config.model_path}")
 
     # Load reference audio
-    load_reference_segments()
+    load_reference_segments()  # CHECK IT OUT
 
     # Start model worker thread
     model_thread_running.set()
@@ -123,15 +123,14 @@ def load_single_reference(audio_path, text, speaker_id):
     if os.path.isfile(audio_path):
         print(f"Loading reference audio: {audio_path}", flush=True)
         wav, sr = torchaudio.load(audio_path)
-        # Convert to mono if stereo
-        if wav.shape[0] > 1:
-            wav = wav.mean(dim=0, keepdim=True)
         wav = torchaudio.functional.resample(
             wav.squeeze(0), orig_freq=sr, new_freq=24000
         )
         return Segment(text=text, speaker=speaker_id, audio=wav)
     else:
-        print(f"Warning: Reference audio '{audio_path}' not found", flush=True)
+        print(
+            f"Warning: Reference audio '{config.reference_audio}' not found", flush=True
+        )
         return None
 
 
@@ -141,63 +140,55 @@ def model_worker():
 
     print("[Worker] Starting model loading...", flush=True)
 
-    # Optimize torch settings
     torch._inductor.config.triton.cudagraphs = False
-    torch._inductor.config.fx_graph_cache = True
-    torch.backends.cudnn.benchmark = True
+    torch._inductor.config.fx_graph_cache = False
 
     # Load the voice model
     generator = load_csm_1b_local(config.model_path, "cuda")
 
     print("[Worker] CSM Model loaded. Starting warm-up...", flush=True)
 
-    # Better warm-up with varied text
-    warmup_texts = [
-        "Hello, this is a warm-up sequence.",
-        "The quick brown fox jumps over the lazy dog.",
-        "How much wood would a woodchuck chuck if a woodchuck could chuck wood?",
-    ]
+    # Warm-up the model - TRY VARIATION
+    warmup_text = "warm-up " * 5
+    for chunk in generator.generate_stream(
+        text=warmup_text,
+        speaker=config.voice_speaker_id,
+        context=reference_segments,
+        max_audio_length_ms=1000,
+        temperature=0.7,
+        topk=40,
+    ):
+        pass
 
-    for warmup_text in warmup_texts:
-        try:
-            for chunk in generator.generate_stream(
-                text=warmup_text,
-                speaker=config.voice_speaker_id,
-                context=reference_segments,
-                max_audio_length_ms=2000,
-                temperature=0.7,
-                topk=40,
-            ):
-                pass
-            time.sleep(0.5)
-        except Exception as e:
-            print(f"[Worker] Warm-up error: {e}", flush=True)
-
+    # SET MODEL.READY
     model_ready.set()
+
     print("[Worker] Model warm-up complete!", flush=True)
 
-    # Main worker loop
+    # Main worker loop - MAIN CODE
     while model_thread_running.is_set():
         try:
-            request = model_queue.get(timeout=0.5)
+            request = model_queue.get(timeout=0.1)
             if request is None:
                 break
 
+            # data unpacking
             text, speaker_id, context, max_ms, temperature, topk = request
 
-            # Generate audio with consistent parameters
+            # Generate audio stream
             for chunk in generator.generate_stream(
                 text=text,
                 speaker=speaker_id,
                 context=context,
-                max_audio_length_ms=min(max_ms, 30000),
-                temperature=0.7,
-                topk=40,
+                max_audio_length_ms=max_ms,
+                temperature=temperature,
+                topk=topk,
             ):
+                model_result_queue.put(chunk)
                 if not model_thread_running.is_set():
                     break
-                model_result_queue.put(chunk)
 
+            # Marker for audio end
             model_result_queue.put("EOS_AUDIO")
 
         except queue.Empty:
@@ -225,19 +216,19 @@ async def audio_generation(text: str, websocket: WebSocket):
         await websocket.send_json({"type": "audio_status", "status": "generating"})
 
         # Preprocess text
-        print(f"[Preprocessing] Original text: {text}", flush=True)
-        text = preprocess_text_for_tts(text)
-        print(f"[Preprocessing] Cleaned text: {text}", flush=True)
+        print(f"[Preprocessing] Original text length: {len(text)}", flush=True)
+        text = preprocess_text_for_tts(text.lower())
+        print(f"[Preprocessing] Cleaned text length: {len(text)}", flush=True)
 
-        # Split text into meaningful chunks
-        text_chunks = split_text_into_meaningful_chunks(text, max_words=50)
+        # Split long text into chunks
+        text_chunks = split_long_text(text, max_words=80)
         print(f"[Preprocessing] Split into {len(text_chunks)} chunks", flush=True)
 
         if len(text_chunks) > 1:
             await websocket.send_json(
                 {
                     "type": "status",
-                    "message": f"Text split into {len(text_chunks)} parts for better processing...",
+                    "message": f"Long text detected. Splitting into {len(text_chunks)} parts...",
                 }
             )
 
@@ -251,17 +242,13 @@ async def audio_generation(text: str, websocket: WebSocket):
                     }
                 )
 
-            # Calculate appropriate audio length
+            # Estimate audio length for better streaming
             words = chunk.split()
-            estimated_seconds = max(3, len(words) * 0.8)
-            max_audio_length_ms = int(estimated_seconds * 1000) + 2000
-
-            # Clear any previous results
-            while not model_result_queue.empty():
-                try:
-                    model_result_queue.get_nowait()
-                except queue.Empty:
-                    break
+            avg_wpm = 90
+            words_per_second = avg_wpm / 60
+            padding_seconds = 2
+            estimated_seconds = len(words) / words_per_second
+            max_audio_length_ms = int((estimated_seconds + padding_seconds) * 1000)
 
             # Send request to model thread
             model_queue.put(
@@ -270,76 +257,74 @@ async def audio_generation(text: str, websocket: WebSocket):
                     config.voice_speaker_id,
                     reference_segments,
                     max_audio_length_ms,
-                    0.7,
-                    40,
+                    0.8,  # temperature
+                    50,  # topk
                 )
             )
 
             chunk_counter = 0
-            audio_chunks = []
-            start_time = time.time()
 
-            # Stream audio chunks
+            # Stream audio chunks in real-time - MAIN CODE
             while True:
                 try:
-                    result = model_result_queue.get(timeout=10.0)
+                    result = model_result_queue.get(timeout=1.0)
 
                     if result == "EOS_AUDIO":
+                        break
+                        # Add silence after EVERY chunk (except the last one)
+                        if i < len(text_chunks) - 1:
+                            silence_duration = 0.5  # seconds between chunks
+                            silence_samples = int(
+                                generator.sample_rate * silence_duration
+                            )
+                            silence = torch.zeros(silence_samples)
+                            silence_array = silence.cpu().numpy().astype(np.float32)
+
+                            await websocket.send_json(
+                                {
+                                    "type": "audio_chunk",
+                                    "audio": silence_array.tolist(),
+                                    "sample_rate": generator.sample_rate,
+                                    "chunk_num": chunk_counter,
+                                    "part": f"{i+1}/{len(text_chunks)}",
+                                    "is_silence": True,
+                                }
+                            )
+                            print(
+                                f"[Silence] Added {silence_duration}s pause after chunk {i+1}"
+                            )
                         break
 
                     elif isinstance(result, Exception):
                         raise result
 
-                    # Collect and process audio chunks
+                    # Convert to numpy and send audio immediately
                     else:
                         chunk_array = result.cpu().numpy().astype(np.float32)
+                        gain = 1.5  # try 1.2–2.0 for louder output
+                        chunk_array = np.clip(chunk_array * gain, -1.0, 1.0)
 
-                        # Apply gentle normalization
-                        max_val = np.max(np.abs(chunk_array))
-                        if max_val > 0:
-                            chunk_array = chunk_array * (0.9 / max_val)
-
-                        audio_chunks.append(chunk_array)
+                        await websocket.send_json(
+                            {
+                                "type": "audio_chunk",
+                                "audio": chunk_array.tolist(),
+                                "sample_rate": generator.sample_rate,
+                                "chunk_num": chunk_counter,
+                                "part": (
+                                    f"{i+1}/{len(text_chunks)}"
+                                    if len(text_chunks) > 1
+                                    else None
+                                ),
+                            }
+                        )
                         chunk_counter += 1
 
-                        # Send chunks in batches
-                        if chunk_counter % 3 == 0 and audio_chunks:
-                            combined_chunk = np.concatenate(audio_chunks)
-                            await websocket.send_json(
-                                {
-                                    "type": "audio_chunk",
-                                    "audio": combined_chunk.tolist(),
-                                    "sample_rate": generator.sample_rate,
-                                    "chunk_num": chunk_counter,
-                                    "part": f"{i+1}/{len(text_chunks)}",
-                                }
-                            )
-                            audio_chunks = []
-
                 except queue.Empty:
-                    print(
-                        f"Timeout waiting for audio chunk {chunk_counter}", flush=True
-                    )
-                    break
+                    continue
 
-            # Send any remaining audio chunks
-            if audio_chunks:
-                combined_chunk = np.concatenate(audio_chunks)
-                await websocket.send_json(
-                    {
-                        "type": "audio_chunk",
-                        "audio": combined_chunk.tolist(),
-                        "sample_rate": generator.sample_rate,
-                        "chunk_num": chunk_counter,
-                        "part": f"{i+1}/{len(text_chunks)}",
-                    }
-                )
-
-            processing_time = time.time() - start_time
-            print(f"Chunk {i+1} processed in {processing_time:.2f}s", flush=True)
-
+        # All chunks processed
         await websocket.send_json(
-            {"type": "status", "message": "Audio generation complete"}
+            {"type": "status", "message": "All parts processed successfully"}
         )
 
     except Exception as e:
@@ -351,51 +336,73 @@ async def audio_generation(text: str, websocket: WebSocket):
     finally:
         is_speaking = False
         audio_gen_lock.release()
+
+        # Send end of stream
         await websocket.send_json({"type": "audio_status", "status": "complete"})
 
 
 def preprocess_text_for_tts(text):
-    # Keep most punctuation for better speech rhythm
-    pattern = r"[\\\|\/\<\>\[\]\{\}\^\`\~]"
+    text = text.replace("-", " ")
+    # This includes: ; : " '  ~ @ # $ % ^ & * ( ) _ - + = [ ] { } \ | / < >
+    pattern = r"[^\w\s.,!?\']"  # <-- Look at this pattern
+    # Replace matched punctuation with empty string
     cleaned_text = re.sub(pattern, "", text)
-
-    # Ensure proper spacing around punctuation
-    cleaned_text = re.sub(r"([.,!?;:])(\S)", r"\1 \2", cleaned_text)
-    cleaned_text = re.sub(r"(\S)([.,!?;:])", r"\1\2", cleaned_text)
-
-    # Normalize spaces
+    # normalize multiple spaces to single space
     cleaned_text = re.sub(r"\s+", " ", cleaned_text)
+    # ensure there's a space after punctuation for better speech pacing
+    cleaned_text = re.sub(r"([.,!?])(\S)", r"\1 \2", cleaned_text)
+    cleaned_text = re.sub(r"([.!?])\s", r"\1, ", cleaned_text)
 
+    print(cleaned_text, flush=True)
     return cleaned_text.strip()
 
 
-def split_text_into_meaningful_chunks(text, max_words=50):
+# Add this function to your server code
+def split_long_text(text, max_words=100):
+    # Split into sentences first
     sentences = re.split(r"(?<=[.!?])\s+", text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+
     chunks = []
     current_chunk = []
     current_word_count = 0
 
     for sentence in sentences:
-        words = sentence.split()
-        word_count = len(words)
+        word_count = len(sentence.split())
 
+        # If this would exceed max words and we have content, finish current chunk
         if current_word_count + word_count > max_words and current_chunk:
+            # Find the best break point (nearest sentence end)
             chunks.append(" ".join(current_chunk))
-            current_chunk = []
-            current_word_count = 0
+            current_chunk = [sentence]
+            current_word_count = word_count
+        else:
+            current_chunk.append(sentence)
+            current_word_count += word_count
 
-        current_chunk.append(sentence)
-        current_word_count += word_count
-
+    # Add the final chunk
     if current_chunk:
         chunks.append(" ".join(current_chunk))
 
-    # If no natural breaks found, split by words
-    if not chunks:
-        words = text.split()
-        for i in range(0, len(words), max_words):
-            chunk = " ".join(words[i : i + max_words])
-            chunks.append(chunk)
+    return chunks
+    # Split into sentences
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+
+    chunks = []
+
+    for sentence in sentences:
+        words = sentence.split()
+        word_count = len(words)
+
+        # If sentence is too long, split it by word count
+        if word_count > max_words:
+            for i in range(0, word_count, max_words):
+                chunk = " ".join(words[i : i + max_words])
+                chunks.append(chunk)
+        else:
+            # Normal sentence as its own chunk
+            chunks.append(sentence)
 
     return chunks
 
@@ -412,6 +419,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await websocket.accept()
     active_connections.append(websocket)
+
+    # print(f"[WebSocket] Client connected. Active connections: {len(active_connections)}", flush=True)
+    # print(f"[WebSocket] Model queue size: {model_queue.qsize()}", flush=True)
+    # print(f"[WebSocket] Result queue size: {model_result_queue.qsize()}", flush=True)
 
     print("[WebSocket] Client connected", flush=True)
 
@@ -443,15 +454,17 @@ async def websocket_endpoint(websocket: WebSocket):
         if websocket in active_connections:
             active_connections.remove(websocket)
 
-        # Clear queues on disconnect
+        # CLEAR QUEUES ON DISCONNECT
         print("[Websocket] Clearing queues on disconnect...", flush=True)
 
+        # Clear model result queue
         while not model_result_queue.empty():
             try:
                 model_result_queue.get_nowait()
             except queue.Empty:
                 break
 
+        # Clear model request queue
         while not model_queue.empty():
             try:
                 model_queue.get_nowait()
@@ -484,6 +497,6 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=8100,
-        timeout_keep_alive=300,
-        timeout_graceful_shutdown=60,
+        timeout_keep_alive=300,  # 5 minutes
+        timeout_graceful_shutdown=60,  # 1 minute
     )
